@@ -108,7 +108,7 @@ import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-con
 import { resolveCompactionTimeoutMs } from "../compaction-safety-timeout.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
-import { applyExtraParamsToAgent } from "../extra-params.js";
+import { applyExtraParamsToAgent, resolveAgentTransportOverride } from "../extra-params.js";
 import {
   logToolSchemasForGoogle,
   sanitizeSessionHistory,
@@ -158,6 +158,7 @@ import {
 } from "./compaction-timeout.js";
 import { pruneProcessedHistoryImages } from "./history-image-prune.js";
 import { detectAndLoadPromptImages } from "./images.js";
+import { shouldInjectHeartbeatPromptForTrigger } from "./trigger-policy.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 type PromptBuildHookRunner = {
@@ -1526,9 +1527,9 @@ export function resolvePromptModeForSession(sessionKey?: string): "minimal" | "f
 
 export function shouldInjectHeartbeatPrompt(params: {
   isDefaultAgent: boolean;
-  trigger?: string;
+  trigger?: EmbeddedRunAttemptParams["trigger"];
 }): boolean {
-  return params.isDefaultAgent && params.trigger !== "cron";
+  return params.isDefaultAgent && shouldInjectHeartbeatPromptForTrigger(params.trigger);
 }
 
 export function resolveAttemptFsWorkspaceOnly(params: {
@@ -2286,7 +2287,7 @@ export async function runEmbeddedAttempt(
         activeSession.agent.streamFn = wrapOllamaCompatNumCtx(activeSession.agent.streamFn, numCtx);
       }
 
-      applyExtraParamsToAgent(
+      const { effectiveExtraParams } = applyExtraParamsToAgent(
         activeSession.agent,
         params.config,
         params.provider,
@@ -2299,6 +2300,17 @@ export async function runEmbeddedAttempt(
         sessionAgentId,
         effectiveWorkspace,
       );
+      const agentTransportOverride = resolveAgentTransportOverride({
+        settingsManager,
+        effectiveExtraParams,
+      });
+      if (agentTransportOverride && activeSession.agent.transport !== agentTransportOverride) {
+        log.debug(
+          `embedded agent transport override: ${activeSession.agent.transport} -> ${agentTransportOverride} ` +
+            `(${params.provider}/${params.modelId})`,
+        );
+        activeSession.agent.setTransport(agentTransportOverride);
+      }
 
       if (cacheTrace) {
         cacheTrace.recordStage("session:loaded", {
